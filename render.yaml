@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: crypto-collector
+    env: node
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm run start

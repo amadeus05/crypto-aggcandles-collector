@@ -1,0 +1,29 @@
+{
+  "name": "binance-candle-service",
+  "version": "1.0.0",
+  "description": "Microservice for Binance smart candles stored in Supabase",
+  "main": "dist/app.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
+    "build": "tsc",
+    "start": "node dist/app.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.10.0",
+    "axios": "^1.5.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/node": "^20.5.6",
+    "@types/ws": "^8.5.7",
+    "ts-node": "^10.9.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
