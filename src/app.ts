@@ -10,7 +10,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY!;
 const DATA_TTL_DAYS = parseInt(process.env.DATA_TTL_DAYS || '2');
 
 async function main() {
-  console.log(SUPABASE_KEY + ' ' + SUPABASE_URL);
+  
   const repo = new SupabaseRepository(SUPABASE_URL, SUPABASE_KEY);
   await repo.init(); // Инициализация и создание таблицы
 
