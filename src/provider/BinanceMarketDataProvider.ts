@@ -278,10 +278,13 @@ export class BinanceMarketDataProvider {
 
     const close = parseFloat(k.c);
     const vol = parseFloat(k.v);
-    const takerBuy = parseFloat(k.V);
-    const deltaBase = (takerBuy * 2) - vol;
-    const avgPrice = (parseFloat(k.o) + parseFloat(k.h) + parseFloat(k.l) + close) / 4;
-    const deltaUSD = deltaBase * avgPrice;
+    
+    // Используем Quote Volume (USDT) напрямую, без усреднения цены
+    const quoteVol = parseFloat(k.q);          // Общий объем в $
+    const takerBuyQuoteVol = parseFloat(k.Q);  // Объем покупок маркет-ордерами в $
+
+    // Формула: (Покупки - Продажи) = (Покупки - (Всего - Покупки)) = 2*Покупки - Всего
+    const deltaUSD = (takerBuyQuoteVol * 2) - quoteVol;
 
     state.lastPrice = close;
     const candleTimestamp = k.t;
