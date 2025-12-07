@@ -18,7 +18,7 @@ export class SupabaseRepository {
     if (this.initialized) return;
 
     await this.ensureTable();
-    // await this.truncateAll();
+    await this.truncateAll();
     this.flushInterval = setInterval(() => this.flush(), 1000);
     this.initialized = true;
     console.log('[SupabaseRepository] Initialized');
