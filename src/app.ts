@@ -4,7 +4,7 @@ import { BinanceMarketDataProvider } from './provider/BinanceMarketDataProvider'
 import { SupabaseRepository } from './repository/SupabaseRepository';
 import { CandleService } from './service/CandleService';
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.SERVER_PORT || 8000;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_KEY = process.env.SUPABASE_KEY!;
 const DATA_TTL_DAYS = parseInt(process.env.DATA_TTL_DAYS || '2');
