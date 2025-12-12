@@ -48,3 +48,10 @@ export interface MarketData {
     liqMaxShort: number;
   };
 }
+
+export interface Repository {
+  init(): Promise<void>;
+  enqueue(row: SmartCandleRow): void;
+  deleteOld(ttlDays: number): Promise<void>;
+  shutdown(): Promise<void>;
+}

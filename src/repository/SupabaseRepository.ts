@@ -1,7 +1,14 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { SmartCandleRow } from '../types';
 
-export class SupabaseRepository {
+export interface Repository {
+  init(): Promise<void>;
+  enqueue(row: SmartCandleRow): void;
+  deleteOld(ttlDays: number): Promise<void>;
+  shutdown(): Promise<void>;
+}
+
+export class SupabaseRepository implements Repository {
   private client: SupabaseClient;
   private buffer: SmartCandleRow[] = [];
   private flushInterval: NodeJS.Timeout | null = null;

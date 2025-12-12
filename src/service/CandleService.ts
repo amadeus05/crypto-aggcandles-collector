@@ -1,11 +1,10 @@
 import { BinanceMarketDataProvider } from '../provider/BinanceMarketDataProvider';
-import { SupabaseRepository } from './../repository/SupabaseRepository';
-import { MarketData, SmartCandleRow } from '../types';
+import { Repository, MarketData, SmartCandleRow } from '../types';
 
 export class CandleService {
   private startedAt = Date.now();
 
-  constructor(private repo: SupabaseRepository, private provider: BinanceMarketDataProvider) {
+  constructor(private repo: Repository, private provider: BinanceMarketDataProvider) {
     this.provider.onPriceUpdate((d) => this.handleMarketData(d as MarketData));
   }
 
