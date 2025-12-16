@@ -1,18 +1,24 @@
 import WebSocket from 'ws';
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
 
-// КОНФИГУРАЦИЯ
+// --- КОНФИГУРАЦИЯ ---
 const BINANCE_FUTURES_EXCHANGE_INFO_URL = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
 const BINANCE_FUTURES_OI_API = 'https://fapi.binance.com/fapi/v1/openInterest';
 const BINANCE_FUTURES_STREAM_BASE = 'wss://fstream.binance.com/stream';
 
 const BATCH_SIZE = 30;
 const KLINE_INTERVAL = '1m';
-const MAX_REQ_PER_SEC = 20;
-const HTTP_TIMEOUT = 2000;
 
-// Список пар с принудительно низким приоритетом (крупные стабильные монеты)
+// ОПТИМИЗАЦИЯ ПОД 550 МОНЕТ:
+// Лимит Binance IP для FAPI ~2400 в минуту. 
+// 35 запросов/сек * 60 = 2100. Это безопасно и быстро.
+const MAX_REQ_PER_SEC = 35; 
+
+// Увеличили таймаут, чтобы при нагрузке запросы не обрывались
+const HTTP_TIMEOUT = 10000; 
+
+// Список пар с принудительно низким приоритетом (крупные ликвидные монеты обновляем реже)
 const LOW_PRIORITY_SYMBOLS = new Set([
   'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT',
   'TRXUSDT', 'LINKUSDT', 'AVAXUSDT', 'MATICUSDT', 'DOTUSDT', 'LTCUSDT',
@@ -76,6 +82,7 @@ export interface ProviderHealthStatus {
   messageCount: number;
   reconnectAttempts: number;
   errorCount: number;
+  queueLag?: number; // Добавим метрику отставания очереди
 }
 
 export type MarketDataCallback = (data: MarketDataUpdate) => void;
@@ -93,19 +100,33 @@ export class BinanceMarketDataProvider {
   private reconnectTimers = new Set<NodeJS.Timeout>();
   private readyPromise: Promise<void>;
   private isPollingOI = false;
-  private axiosInstance = axios.create({
-    httpsAgent: new https.Agent({ keepAlive: true }),
-    timeout: HTTP_TIMEOUT,
-  });
+  private axiosInstance: AxiosInstance;
 
   private callback: MarketDataCallback | null = null;
   private messageCount = 0;
   private errorCount = 0;
   private reconnectAttempts = 0;
   private lastUpdateTime = 0;
+  private maxQueueDelay = 0; // Для мониторинга
 
   constructor(public marketType: 'futures') {
     this.providerId = `binance-${marketType}-ws`;
+
+    // НАСТРОЙКА СЕТИ: Оптимизируем Agent для высокой конкурентности
+    this.axiosInstance = axios.create({
+      httpsAgent: new https.Agent({ 
+        keepAlive: true,
+        // Разрешаем открывать больше сокетов, чем запросов в секунду
+        maxSockets: MAX_REQ_PER_SEC + 15, 
+        maxFreeSockets: MAX_REQ_PER_SEC,
+        timeout: 60000 // Таймаут TCP соединения
+      }),
+      timeout: HTTP_TIMEOUT, // Таймаут ожидания ответа
+      headers: {
+        'User-Agent': 'NodeCryptoBot/1.0'
+      }
+    });
+
     this.readyPromise = this.loadSymbolsWithRetry();
   }
 
@@ -157,7 +178,7 @@ export class BinanceMarketDataProvider {
     await this.readyPromise;
     this.connected = true;
 
-    // Fetch initial OI for all symbols before starting streams
+    // Сначала загружаем OI для всех
     console.log(`[${this.providerId}] Fetching initial OI for all symbols...`);
     await this.fetchInitialOI();
     console.log(`[${this.providerId}] Initial OI fetch complete`);
@@ -165,30 +186,27 @@ export class BinanceMarketDataProvider {
     this.subscribeToBatches();
     this.startAllTickersStream();
     this.startSmartOIPolling();
-    console.log(`[${this.providerId}] Connected`);
+    console.log(`[${this.providerId}] Connected. Max Rate: ${MAX_REQ_PER_SEC} req/s`);
   }
 
   private async fetchInitialOI(): Promise<void> {
     const symbols = Array.from(this.symbols);
-    const batchSize = 10; // Parallel requests per batch
-    const delayBetweenBatches = 600; // ms delay to respect rate limits
+    const batchSize = 10;
+    const delayBetweenBatches = 600;
 
     for (let i = 0; i < symbols.length; i += batchSize) {
+      if (!this.connected) break;
       const batch = symbols.slice(i, i + batchSize);
       await Promise.all(batch.map(async (symbol) => {
         try {
           const res = await this.axiosInstance.get(BINANCE_FUTURES_OI_API, { params: { symbol } });
           if (res.data?.openInterest) {
             const state = this.marketStates.get(symbol);
-            if (state) {
-              state.openInterest = parseFloat(res.data.openInterest);
-            }
+            if (state) state.openInterest = parseFloat(res.data.openInterest);
             const p = this.priorityMap.get(symbol);
             if (p) p.lastUpdated = Date.now();
           }
-        } catch {
-          // Skip failed symbols, they'll be retried in polling
-        }
+        } catch { }
       }));
 
       if (i + batchSize < symbols.length) {
@@ -237,12 +255,12 @@ export class BinanceMarketDataProvider {
           this.wsList[idx] = this.createBatchWS(batch);
         }
         this.reconnectAttempts++;
-        console.log(`[${this.providerId}] Reconnected batch, total attempts: ${this.reconnectAttempts}`);
+        // console.log(`[${this.providerId}] Reconnected batch`);
       }, 3000);
       this.reconnectTimers.add(timer);
     });
 
-    // @ts-ignore - для graceful shutdown
+    // @ts-ignore
     ws._closeGracefully = () => {
       closedByUs = true;
       try { ws.terminate(); } catch { }
@@ -280,12 +298,8 @@ export class BinanceMarketDataProvider {
 
     const close = parseFloat(k.c);
     const vol = parseFloat(k.v);
-    
-    // Используем Quote Volume (USDT) напрямую, без усреднения цены
-    const quoteVol = parseFloat(k.q);          // Общий объем в $
-    const takerBuyQuoteVol = parseFloat(k.Q);  // Объем покупок маркет-ордерами в $
-
-    // Формула: (Покупки - Продажи) = (Покупки - (Всего - Покупки)) = 2*Покупки - Всего
+    const quoteVol = parseFloat(k.q);
+    const takerBuyQuoteVol = parseFloat(k.Q);
     const deltaUSD = (takerBuyQuoteVol * 2) - quoteVol;
 
     state.lastPrice = close;
@@ -365,29 +379,26 @@ export class BinanceMarketDataProvider {
     indicators: MarketDataUpdate['indicators'];
   }): void {
     if (!this.callback) return;
-
-    const update: MarketDataUpdate = {
-      providerId: this.providerId,
-      marketType: this.marketType,
-      symbol: state.symbol,
-      price: payload.price,
-      timestamp: payload.timestamp,
-      isCandleClosed: payload.isClosed,
-      ohlc: payload.ohlc,
-      indicators: payload.indicators,
-    };
-
     try {
-      this.callback(update);
+      this.callback({
+        providerId: this.providerId,
+        marketType: this.marketType,
+        symbol: state.symbol,
+        price: payload.price,
+        timestamp: payload.timestamp,
+        isCandleClosed: payload.isClosed,
+        ohlc: payload.ohlc,
+        indicators: payload.indicators,
+      });
     } catch (e) {
       this.errorCount++;
     }
   }
 
-  // --- TICKER STREAM для динамического приоритета ---
+  // --- TICKER STREAM ---
   private startAllTickersStream(): void {
     this.tickerWs = new WebSocket(`${BINANCE_FUTURES_STREAM_BASE}?streams=!ticker@arr`);
-
+    
     this.tickerWs.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
@@ -396,14 +407,15 @@ export class BinanceMarketDataProvider {
 
         for (const t of arr) {
           const sym = t.s;
+          // Игнорируем low priority, они всегда обновляются раз в минуту
           if (!this.symbols.has(sym) || LOW_PRIORITY_SYMBOLS.has(sym)) continue;
 
-          const change = Math.abs(parseFloat(t.P)); // Percent change
-          const vol = parseFloat(t.q); // Quote volume
+          const change = Math.abs(parseFloat(t.P));
+          const vol = parseFloat(t.q);
           const p = this.priorityMap.get(sym);
 
           if (p) {
-            // Высокий приоритет для волатильных или высоковолумных монет
+            // Если волатильность > 3% или объем > 50M - повышаем приоритет до 2 сек
             p.priority = (change > 3 || vol > 50_000_000) ? 10 : 5;
           }
         }
@@ -411,8 +423,8 @@ export class BinanceMarketDataProvider {
     });
 
     this.tickerWs.on('error', (err) => {
+      // console.error(`[${this.providerId}] Ticker WS error`);
       this.errorCount++;
-      console.error(`[${this.providerId}] Ticker WS error:`, err.message);
     });
 
     this.tickerWs.on('close', () => {
@@ -422,41 +434,60 @@ export class BinanceMarketDataProvider {
     });
   }
 
-  // --- SMART OI POLLING ---
+  // --- SMART OI POLLING (ИСПРАВЛЕННАЯ ЛОГИКА) ---
   private async startSmartOIPolling(): Promise<void> {
     this.isPollingOI = true;
 
     while (this.isPollingOI && this.connected) {
       const start = Date.now();
+      
+      // 1. Выбираем кандидатов (сортировка по срочности)
       const candidates = this.selectOICandidates();
 
+      // 2. Делаем запросы параллельно
       if (candidates.length > 0) {
         await Promise.all(candidates.map((sym) => this.fetchOI(sym)));
       }
 
       const elapsed = Date.now() - start;
+      // Стараемся держать ритм, но не спамить
       const sleep = Math.max(1000 - elapsed, 100);
       await new Promise((r) => setTimeout(r, sleep));
     }
   }
 
+  // КЛЮЧЕВОЙ МЕТОД: Устраняет проблему "застывания" монет в конце списка
   private selectOICandidates(): string[] {
     const now = Date.now();
-    const result: string[] = [];
+    const candidates: { symbol: string; urgency: number }[] = [];
 
     for (const [sym, p] of this.priorityMap.entries()) {
-      // Интервалы опроса в зависимости от приоритета
-      let interval = 15000; // default: 15 секунд
-      if (p.priority === 1) interval = 60000;      // low priority: 1 минута
-      else if (p.priority === 10) interval = 2000; // high priority: 2 секунды
+      let interval = 15000; // Стандарт (priority 5)
+      if (p.priority === 1) interval = 60000;      
+      else if (p.priority === 10) interval = 2000; 
 
-      if (now - p.lastUpdated > interval) {
-        result.push(sym);
-        if (result.length >= MAX_REQ_PER_SEC) break;
+      const elapsed = now - p.lastUpdated;
+
+      if (elapsed > interval) {
+        // Чем больше времени прошло сверх интервала, тем выше urgency
+        candidates.push({ 
+          symbol: sym, 
+          urgency: elapsed - interval 
+        });
       }
     }
 
-    return result;
+    // Сортировка по убыванию urgency (самые "голодные" идут первыми)
+    candidates.sort((a, b) => b.urgency - a.urgency);
+
+    if (candidates.length > 0) {
+        this.maxQueueDelay = candidates[0].urgency;
+    }
+
+    // Берем топ N задач, чтобы не превысить лимиты
+    return candidates
+      .slice(0, MAX_REQ_PER_SEC)
+      .map(c => c.symbol);
   }
 
   private async fetchOI(symbol: string): Promise<void> {
@@ -476,10 +507,18 @@ export class BinanceMarketDataProvider {
           state.lastOITimestamp = Date.now();
         }
 
+        // Обновляем lastUpdated ТОЛЬКО при успехе
         if (p) p.lastUpdated = Date.now();
       }
-    } catch (err) {
-      console.error(`[ERROR] fetchOI ${symbol}`, err);
+    } catch (err: any) {
+      // Игнорируем сетевые ошибки, монета останется с высоким urgency и обновится в след. цикле
+      if (axios.isAxiosError(err) && (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT')) {
+        // Можно включить, если нужно отлаживать сеть
+        // console.warn(`[OI] Timeout ${symbol}`);
+      } else {
+        console.error(`[ERROR] fetchOI ${symbol} ${err.message}`);
+      }
+      this.errorCount++;
     }
   }
 
@@ -505,6 +544,7 @@ export class BinanceMarketDataProvider {
       messageCount: this.messageCount,
       reconnectAttempts: this.reconnectAttempts,
       errorCount: this.errorCount,
+      queueLag: this.maxQueueDelay, // Показывает, насколько самая старая монета отстала от графика (мс)
     };
   }
 }

@@ -5,7 +5,7 @@ import { SupabaseRepository } from './repository/SupabaseRepository';
 import { CockroachDBRepository } from './repository/CockroachDBRepository';
 import { CandleService } from './service/CandleService';
 
-const PORT = process.env.SERVER_PORT || 8000;
+const PORT = process.env.SERVER_PORT || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_KEY = process.env.SUPABASE_KEY!;
 const COCKROACH_CONNECTION_STRING = process.env.COCKROACH_CONNECTION_STRING!;
