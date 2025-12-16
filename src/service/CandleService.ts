@@ -8,11 +8,17 @@ export class CandleService {
     this.provider.onPriceUpdate((d) => this.handleMarketData(d as MarketData));
   }
 
-  private minuteStart(ts: number) { return Math.floor(ts / 60000) * 60000; }
+  private minuteStart(ts: number) { 
+    return Math.floor(ts / 60000) * 60000; 
+  }
 
   private handleMarketData(d: MarketData) {
     if (d.isCandleClosed && d.ohlc) {
       const ts = this.minuteStart(d.timestamp);
+
+      // Берём актуальное состояние символа из провайдера
+      const state = (this.provider as any).marketStates?.get(d.symbol);
+
       const row: SmartCandleRow = {
         symbol: d.symbol,
         ts,
@@ -23,7 +29,8 @@ export class CandleService {
         v: d.ohlc.volume,
         cvd: d.indicators.cvd,
         delta: d.indicators.candleDelta,
-        oi: d.indicators.openInterest,
+        // всегда пишем последнее известное значение OI
+        oi: state?.openInterest ?? d.indicators.openInterest,
         funding: d.indicators.fundingRate,
         liquidations: {
           long: d.indicators.liquidationsLong,
@@ -35,9 +42,12 @@ export class CandleService {
         },
         last_price: d.price,
       };
+
       this.repo.enqueue(row);
     }
   }
 
-  public getUptimeSecs() { return Math.floor((Date.now() - this.startedAt) / 1000); }
+  public getUptimeSecs() { 
+    return Math.floor((Date.now() - this.startedAt) / 1000); 
+  }
 }

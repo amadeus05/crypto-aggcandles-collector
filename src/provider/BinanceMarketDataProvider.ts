@@ -466,32 +466,29 @@ export class BinanceMarketDataProvider {
         const state = this.marketStates.get(symbol);
 
         if (state) {
-          const prevOI = state.openInterest || val;
           state.openInterest = val;
 
-          // Emit update если OI изменился более чем на 0.5%
-          if (Math.abs(val - prevOI) / prevOI > 0.005 && state.lastCandleTimestamp > 0) {
-            const currentCandleTS = Math.floor(Date.now() / 60000) * 60000;
+          const currentCandleTS = Math.floor(Date.now() / 60000) * 60000;
 
-            this.emitUpdate(state, {
-              price: state.lastPrice,
-              isClosed: false,
-              timestamp: currentCandleTS,
-              ohlc: undefined,
-              indicators: {
-                cvd: state.cumulativeCVD,
-                candleDelta: 0,
-                fundingRate: state.fundingRate,
-                openInterest: state.openInterest,
-                liquidationsLong: state.accLiqLong,
-                liquidationsShort: state.accLiqShort,
-                liqCountLong: state.countLiqLong,
-                liqCountShort: state.countLiqShort,
-                liqMaxLong: state.maxLiqLong,
-                liqMaxShort: state.maxLiqShort,
-              }
-            });
-          }
+          this.emitUpdate(state, {
+            price: state.lastPrice,
+            isClosed: false,
+            timestamp: currentCandleTS,
+            ohlc: undefined,
+            indicators: {
+              cvd: state.cumulativeCVD,
+              candleDelta: 0,
+              fundingRate: state.fundingRate,
+              openInterest: state.openInterest,
+              liquidationsLong: state.accLiqLong,
+              liquidationsShort: state.accLiqShort,
+              liqCountLong: state.countLiqLong,
+              liqCountShort: state.countLiqShort,
+              liqMaxLong: state.maxLiqLong,
+              liqMaxShort: state.maxLiqShort,
+            }
+          });
+
         }
 
         const p = this.priorityMap.get(symbol);
