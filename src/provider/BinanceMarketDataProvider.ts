@@ -25,6 +25,7 @@ interface SymbolState {
   lastCandleTimestamp: number;
   fundingRate: number;
   openInterest: number;
+  lastOITimestamp: number;
   lastPrice: number;
   accLiqLong: number;
   accLiqShort: number;
@@ -138,6 +139,7 @@ export class BinanceMarketDataProvider {
           lastCandleTimestamp: 0,
           fundingRate: 0,
           openInterest: 0,
+          lastOITimestamp: 0,
           lastPrice: 0,
           accLiqLong: 0, accLiqShort: 0,
           countLiqLong: 0, countLiqShort: 0,
@@ -459,43 +461,25 @@ export class BinanceMarketDataProvider {
 
   private async fetchOI(symbol: string): Promise<void> {
     try {
-      const res = await this.axiosInstance.get(BINANCE_FUTURES_OI_API, { params: { symbol } });
+      const res = await this.axiosInstance.get(
+        BINANCE_FUTURES_OI_API,
+        { params: { symbol } }
+      );
 
       if (res.data?.openInterest) {
         const val = parseFloat(res.data.openInterest);
         const state = this.marketStates.get(symbol);
+        const p = this.priorityMap.get(symbol);
 
         if (state) {
           state.openInterest = val;
-
-          const currentCandleTS = Math.floor(Date.now() / 60000) * 60000;
-
-          this.emitUpdate(state, {
-            price: state.lastPrice,
-            isClosed: false,
-            timestamp: currentCandleTS,
-            ohlc: undefined,
-            indicators: {
-              cvd: state.cumulativeCVD,
-              candleDelta: 0,
-              fundingRate: state.fundingRate,
-              openInterest: state.openInterest,
-              liquidationsLong: state.accLiqLong,
-              liquidationsShort: state.accLiqShort,
-              liqCountLong: state.countLiqLong,
-              liqCountShort: state.countLiqShort,
-              liqMaxLong: state.maxLiqLong,
-              liqMaxShort: state.maxLiqShort,
-            }
-          });
-
+          state.lastOITimestamp = Date.now();
         }
 
-        const p = this.priorityMap.get(symbol);
         if (p) p.lastUpdated = Date.now();
       }
-    } catch {
-      // Rate limit или сетевая ошибка — молча пропускаем
+    } catch (err) {
+      console.error(`[ERROR] fetchOI ${symbol}`, err);
     }
   }
 
