@@ -5,7 +5,7 @@ import { SupabaseRepository } from './repository/SupabaseRepository';
 import { CockroachDBRepository } from './repository/CockroachDBRepository';
 import { CandleService } from './service/CandleService';
 
-const PORT = process.env.SERVER_PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_KEY = process.env.SUPABASE_KEY!;
 const COCKROACH_CONNECTION_STRING = process.env.COCKROACH_CONNECTION_STRING!;
@@ -57,7 +57,7 @@ async function main() {
     });
   });
 
-  const server = app.listen(PORT, () => console.log('Service listening on', PORT));
+  const server = app.listen(PORT, '0.0.0.0', () => console.log('Service listening on', PORT));
 
   const shutdown = async () => {
     console.log('Shutting down...');
