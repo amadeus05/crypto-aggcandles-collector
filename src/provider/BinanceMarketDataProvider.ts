@@ -114,17 +114,17 @@ export class BinanceMarketDataProvider {
 
     // НАСТРОЙКА СЕТИ: Оптимизируем Agent для высокой конкурентности
     this.axiosInstance = axios.create({
-      httpsAgent: new https.Agent({ 
-        keepAlive: true,
-        // Разрешаем открывать больше сокетов, чем запросов в секунду
-        maxSockets: MAX_REQ_PER_SEC + 15, 
-        maxFreeSockets: MAX_REQ_PER_SEC,
-        timeout: 60000 // Таймаут TCP соединения
-      }),
+      // httpsAgent: new https.Agent({ 
+      //   keepAlive: true,
+      //   // Разрешаем открывать больше сокетов, чем запросов в секунду
+      //   maxSockets: MAX_REQ_PER_SEC + 15, 
+      //   maxFreeSockets: MAX_REQ_PER_SEC,
+      //   timeout: 60000 // Таймаут TCP соединения
+      // }),
       timeout: HTTP_TIMEOUT, // Таймаут ожидания ответа
-      headers: {
-        'User-Agent': 'NodeCryptoBot/1.0'
-      }
+      // headers: {
+      //   'User-Agent': 'NodeCryptoBot/1.0'
+      // }
     });
 
     this.readyPromise = this.loadSymbolsWithRetry();
