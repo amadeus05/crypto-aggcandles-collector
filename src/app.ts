@@ -57,7 +57,7 @@ async function main() {
     });
   });
 
-  const server = app.listen(PORT, '0.0.0.0', () => console.log('Service listening on', PORT));
+  const server = app.listen(PORT, '0.0.0.0', () => console.log('Service v2 listening on', PORT));
 
   const shutdown = async () => {
     console.log('Shutting down...');
