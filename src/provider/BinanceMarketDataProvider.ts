@@ -13,7 +13,7 @@ const KLINE_INTERVAL = '1m';
 // ОПТИМИЗАЦИЯ ПОД 550 МОНЕТ:
 // Лимит Binance IP для FAPI ~2400 в минуту. 
 // 35 запросов/сек * 60 = 2100. Это безопасно и быстро.
-const MAX_REQ_PER_SEC = 20; 
+const MAX_REQ_PER_SEC = 35; 
 
 // Увеличили таймаут, чтобы при нагрузке запросы не обрывались
 const HTTP_TIMEOUT = 10000; 
@@ -114,16 +114,16 @@ export class BinanceMarketDataProvider {
 
     // НАСТРОЙКА СЕТИ: Оптимизируем Agent для высокой конкурентности
     this.axiosInstance = axios.create({
-      // httpsAgent: new https.Agent({ 
-      //   keepAlive: true,
-      //   // Разрешаем открывать больше сокетов, чем запросов в секунду
-      //   maxSockets: MAX_REQ_PER_SEC + 15, 
-      //   maxFreeSockets: MAX_REQ_PER_SEC,
-      //   timeout: 60000 // Таймаут TCP соединения
-      // }),
+      httpsAgent: new https.Agent({ 
+        keepAlive: true,
+        // Разрешаем открывать больше сокетов, чем запросов в секунду
+        maxSockets: MAX_REQ_PER_SEC + 15, 
+        maxFreeSockets: MAX_REQ_PER_SEC,
+        timeout: 60000 // Таймаут TCP соединения
+      }),
       timeout: HTTP_TIMEOUT, // Таймаут ожидания ответа
       // headers: {
-      //   'User-Agent': 'NodeCryptoBot/1.0'
+      //   'User-Agent': 'NodeCryptoCollector/1.0'
       // }
     });
 
