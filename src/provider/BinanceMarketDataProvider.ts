@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
+import PQueue from 'p-queue';
 
 // --- КОНФИГУРАЦИЯ ---
 const BINANCE_FUTURES_EXCHANGE_INFO_URL = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
@@ -120,8 +121,23 @@ export class BinanceMarketDataProvider {
   private lastUpdateTime = 0;
   private maxQueueDelay = 0; // Для мониторинга
 
+  // 🔥 Rate limiter для OI polling (предотвращает burst)
+  private oiQueue: PQueue | null = null;
+  private useRateLimiter: boolean;
+
   constructor(public marketType: 'futures') {
     this.providerId = `binance-${marketType}-ws`;
+
+    // 🔥 Включение rate limiter через env
+    this.useRateLimiter = process.env.USE_RATE_LIMITER === 'true';
+
+    if (this.useRateLimiter) {
+      this.oiQueue = new PQueue({
+        interval: 1000,
+        intervalCap: MAX_REQ_PER_SEC
+      });
+      console.log(`[${this.providerId}] Rate limiter ENABLED (${MAX_REQ_PER_SEC} req/sec)`);
+    }
 
     // НАСТРОЙКА СЕТИ: Оптимизируем Agent для высокой конкурентности
     this.axiosInstance = axios.create({
@@ -497,9 +513,17 @@ export class BinanceMarketDataProvider {
       // 1. Выбираем кандидатов (сортировка по срочности)
       const candidates = this.selectOICandidates();
 
-      // 2. Делаем запросы параллельно
+      // 2. Делаем запросы с rate limiting или параллельно
       if (candidates.length > 0) {
-        await Promise.all(candidates.map((sym) => this.fetchOI(sym)));
+        if (this.useRateLimiter && this.oiQueue) {
+          // 🔥 Rate-limited: ≤35 req/sec гарантировано
+          await Promise.all(
+            candidates.map(sym => this.oiQueue!.add(() => this.fetchOI(sym)))
+          );
+        } else {
+          // Старый режим: burst
+          await Promise.all(candidates.map((sym) => this.fetchOI(sym)));
+        }
       }
 
       const elapsed = Date.now() - start;
