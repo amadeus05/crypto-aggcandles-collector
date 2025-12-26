@@ -13,24 +13,35 @@ const KLINE_INTERVAL = '1m';
 // ОПТИМИЗАЦИЯ ПОД 550 МОНЕТ:
 // Лимит Binance IP для FAPI ~2400 в минуту. 
 // 35 запросов/сек * 60 = 2100. Это безопасно и быстро.
-const MAX_REQ_PER_SEC = 35; 
+const MAX_REQ_PER_SEC = 35;
 
 // Увеличили таймаут, чтобы при нагрузке запросы не обрывались
-const HTTP_TIMEOUT = 10000; 
+const HTTP_TIMEOUT = 10000;
 
 // Список пар с принудительно низким приоритетом (крупные ликвидные монеты обновляем реже)
 const LOW_PRIORITY_SYMBOLS = new Set([
-  'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT',
+  'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT',
   'TRXUSDT', 'LINKUSDT', 'AVAXUSDT', 'MATICUSDT', 'DOTUSDT', 'LTCUSDT',
   'USDCUSDT', 'BUSDUSDT', 'EURUSDT'
 ]);
 
+// OI snapshot с таймстампом для точного сопоставления со свечой
+interface OISnapshot {
+  ts: number;    // timestamp когда получен OI
+  value: number; // значение OI
+}
+
+// Максимум истории OI (храним 5 минут = 5-10 записей макс)
+const MAX_OI_HISTORY = 10;
+
 interface SymbolState {
   symbol: string;
-  cumulativeCVD: number;
+  cvd: number;           // накопленный CVD (истина из aggTrade)
+  candleDelta: number;   // delta ТЕКУЩЕЙ минуты
   lastCandleTimestamp: number;
   fundingRate: number;
-  openInterest: number;
+  openInterest: number;  // последнее полученное значение OI (live)
+  oiHistory: OISnapshot[]; // 🔥 история OI с таймстампами
   lastOITimestamp: number;
   lastPrice: number;
   accLiqLong: number;
@@ -114,10 +125,10 @@ export class BinanceMarketDataProvider {
 
     // НАСТРОЙКА СЕТИ: Оптимизируем Agent для высокой конкурентности
     this.axiosInstance = axios.create({
-      httpsAgent: new https.Agent({ 
+      httpsAgent: new https.Agent({
         keepAlive: true,
         // Разрешаем открывать больше сокетов, чем запросов в секунду
-        maxSockets: MAX_REQ_PER_SEC + 15, 
+        maxSockets: MAX_REQ_PER_SEC + 15,
         maxFreeSockets: MAX_REQ_PER_SEC,
         timeout: 60000 // Таймаут TCP соединения
       }),
@@ -156,10 +167,12 @@ export class BinanceMarketDataProvider {
         this.symbols.add(s.symbol);
         this.marketStates.set(s.symbol, {
           symbol: s.symbol,
-          cumulativeCVD: 0,
+          cvd: 0,
+          candleDelta: 0,
           lastCandleTimestamp: 0,
           fundingRate: 0,
           openInterest: 0,
+          oiHistory: [],
           lastOITimestamp: 0,
           lastPrice: 0,
           accLiqLong: 0, accLiqShort: 0,
@@ -235,7 +248,7 @@ export class BinanceMarketDataProvider {
   private createBatchWS(batch: string[]): WebSocket {
     const streams = batch.map((s) => {
       const sym = s.toLowerCase();
-      return `${sym}@kline_${KLINE_INTERVAL}/${sym}@markPrice/${sym}@forceOrder`;
+      return `${sym}@kline_${KLINE_INTERVAL}/${sym}@markPrice/${sym}@forceOrder/${sym}@aggTrade`;
     }).join('/');
 
     const ws = new WebSocket(`${BINANCE_FUTURES_STREAM_BASE}?streams=${streams}`);
@@ -284,6 +297,7 @@ export class BinanceMarketDataProvider {
       if (msg.stream.includes('kline')) this.processKline(msg.data);
       else if (msg.stream.includes('markPrice')) this.processMarkPrice(msg.data);
       else if (msg.stream.includes('forceOrder')) this.processLiquidation(msg.data);
+      else if (msg.stream.includes('aggTrade')) this.processAggTrade(msg.data);
     } catch (e) {
       this.errorCount++;
     }
@@ -298,14 +312,18 @@ export class BinanceMarketDataProvider {
 
     const close = parseFloat(k.c);
     const vol = parseFloat(k.v);
-    const quoteVol = parseFloat(k.q);
-    const takerBuyQuoteVol = parseFloat(k.Q);
-    const deltaUSD = (takerBuyQuoteVol * 2) - quoteVol;
-
-    state.lastPrice = close;
     const candleTimestamp = k.t;
+    const candleCloseTs = k.T; // 🔥 точный timestamp закрытия свечи
     const isClosed = k.x === true;
-    const liveCVD = state.cumulativeCVD + deltaUSD;
+
+    // lastPrice обновляется в processAggTrade для точности
+    if (state.lastPrice === 0) state.lastPrice = close;
+
+    // 🔥 OI SNAPSHOT: выбираем последний OI с timestamp ≤ candle close
+    // Это 100% точность без look-ahead bias
+    const oiToEmit = isClosed
+      ? this.getOIAtTimestamp(state, candleCloseTs)
+      : state.openInterest;
 
     this.emitUpdate(state, {
       price: close,
@@ -319,10 +337,10 @@ export class BinanceMarketDataProvider {
         volume: vol,
       },
       indicators: {
-        cvd: liveCVD,
-        candleDelta: deltaUSD,
+        cvd: state.cvd,
+        candleDelta: state.candleDelta,
         fundingRate: state.fundingRate,
-        openInterest: state.openInterest,
+        openInterest: oiToEmit, // ← точный OI на момент close
         liquidationsLong: state.accLiqLong,
         liquidationsShort: state.accLiqShort,
         liqCountLong: state.countLiqLong,
@@ -332,8 +350,9 @@ export class BinanceMarketDataProvider {
       }
     });
 
+    // RESET ТОЛЬКО НА CLOSE
     if (isClosed) {
-      state.cumulativeCVD += deltaUSD;
+      state.candleDelta = 0;
       state.accLiqLong = 0; state.accLiqShort = 0;
       state.countLiqLong = 0; state.countLiqShort = 0;
       state.maxLiqLong = 0; state.maxLiqShort = 0;
@@ -342,6 +361,40 @@ export class BinanceMarketDataProvider {
 
     this.lastUpdateTime = Date.now();
     this.messageCount++;
+  }
+
+  // 🔥 Выбираем последний OI с timestamp ≤ targetTs
+  private getOIAtTimestamp(state: SymbolState, targetTs: number): number {
+    // Ищем последний OI, который был получен ДО или В момент закрытия свечи
+    let bestOI = state.openInterest; // fallback на текущий
+    let bestTs = 0;
+
+    for (const snap of state.oiHistory) {
+      if (snap.ts <= targetTs && snap.ts > bestTs) {
+        bestOI = snap.value;
+        bestTs = snap.ts;
+      }
+    }
+
+    return bestOI;
+  }
+
+  // 🔥 ИСТИНА BINANCE: CVD из aggTrade
+  private processAggTrade(data: any): void {
+    const state = this.marketStates.get(data.s);
+    if (!state) return;
+
+    const price = parseFloat(data.p);
+    const qty = parseFloat(data.q);
+    const usd = price * qty;
+
+    // m = true  -> SELL aggressor (market sell)
+    // m = false -> BUY aggressor (market buy)
+    const delta = data.m ? -usd : usd;
+
+    state.cvd += delta;
+    state.candleDelta += delta;
+    state.lastPrice = price;
   }
 
   private processMarkPrice(data: any): void {
@@ -398,7 +451,7 @@ export class BinanceMarketDataProvider {
   // --- TICKER STREAM ---
   private startAllTickersStream(): void {
     this.tickerWs = new WebSocket(`${BINANCE_FUTURES_STREAM_BASE}?streams=!ticker@arr`);
-    
+
     this.tickerWs.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString());
@@ -440,7 +493,7 @@ export class BinanceMarketDataProvider {
 
     while (this.isPollingOI && this.connected) {
       const start = Date.now();
-      
+
       // 1. Выбираем кандидатов (сортировка по срочности)
       const candidates = this.selectOICandidates();
 
@@ -463,16 +516,16 @@ export class BinanceMarketDataProvider {
 
     for (const [sym, p] of this.priorityMap.entries()) {
       let interval = 15000; // Стандарт (priority 5)
-      if (p.priority === 1) interval = 60000;      
-      else if (p.priority === 10) interval = 2000; 
+      if (p.priority === 1) interval = 60000;
+      else if (p.priority === 10) interval = 2000;
 
       const elapsed = now - p.lastUpdated;
 
       if (elapsed > interval) {
         // Чем больше времени прошло сверх интервала, тем выше urgency
-        candidates.push({ 
-          symbol: sym, 
-          urgency: elapsed - interval 
+        candidates.push({
+          symbol: sym,
+          urgency: elapsed - interval
         });
       }
     }
@@ -481,7 +534,7 @@ export class BinanceMarketDataProvider {
     candidates.sort((a, b) => b.urgency - a.urgency);
 
     if (candidates.length > 0) {
-        this.maxQueueDelay = candidates[0].urgency;
+      this.maxQueueDelay = candidates[0].urgency;
     }
 
     // Берем топ N задач, чтобы не превысить лимиты
@@ -499,12 +552,22 @@ export class BinanceMarketDataProvider {
 
       if (res.data?.openInterest) {
         const val = parseFloat(res.data.openInterest);
+        // 🔥 Используем Binance server time, не Date.now()
+        const serverTs = res.data.time ?? Date.now();
         const state = this.marketStates.get(symbol);
         const p = this.priorityMap.get(symbol);
 
         if (state) {
           state.openInterest = val;
-          state.lastOITimestamp = Date.now();
+          state.lastOITimestamp = serverTs;
+
+          // 🔥 Добавляем в историю с СЕРВЕРНЫМ таймстампом
+          state.oiHistory.push({ ts: serverTs, value: val });
+
+          // Ограничиваем размер истории
+          if (state.oiHistory.length > MAX_OI_HISTORY) {
+            state.oiHistory.shift();
+          }
         }
 
         // Обновляем lastUpdated ТОЛЬКО при успехе

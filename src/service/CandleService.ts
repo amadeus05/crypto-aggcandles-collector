@@ -8,46 +8,46 @@ export class CandleService {
     this.provider.onPriceUpdate((d) => this.handleMarketData(d as MarketData));
   }
 
-  private minuteStart(ts: number) { 
-    return Math.floor(ts / 60000) * 60000; 
+  private minuteStart(ts: number) {
+    return Math.floor(ts / 60000) * 60000;
   }
 
-private handleMarketData(d: MarketData) {
-  if (d.isCandleClosed && d.ohlc) {
+  private handleMarketData(d: MarketData) {
+    if (d.isCandleClosed && d.ohlc) {
 
-    // if (d.symbol === "ACEUSDT") {
-    //   console.log(`[WRITE] ${d.symbol} oi = ${d.indicators.openInterest}`);
-    // }
+      // if (d.symbol === "ACEUSDT") {
+      //   console.log(`[WRITE] ${d.symbol} oi = ${d.indicators.openInterest}`);
+      // }
 
-    const row: SmartCandleRow = {
-      symbol: d.symbol,
-      ts: this.minuteStart(d.timestamp),
-      o: d.ohlc.open,
-      h: d.ohlc.high,
-      l: d.ohlc.low,
-      c: d.ohlc.close,
-      v: d.ohlc.volume,
-      cvd: d.indicators.cvd,
-      delta: d.indicators.candleDelta,
-      oi: d.indicators.openInterest, // всегда последнее значение
-      funding: d.indicators.fundingRate,
-      liquidations: {
-        long: d.indicators.liquidationsLong,
-        short: d.indicators.liquidationsShort,
-        countLong: d.indicators.liqCountLong,
-        countShort: d.indicators.liqCountShort,
-        maxLong: d.indicators.liqMaxLong,
-        maxShort: d.indicators.liqMaxShort,
-      },
-      last_price: d.price,
-    };
+      const row: SmartCandleRow = {
+        symbol: d.symbol,
+        ts: this.minuteStart(d.timestamp),
+        o: d.ohlc.open,
+        h: d.ohlc.high,
+        l: d.ohlc.low,
+        c: d.ohlc.close,
+        v: d.ohlc.volume,
+        cvd: d.indicators.cvd,
+        delta: d.indicators.candleDelta,
+        oi: d.indicators.openInterest, // всегда последнее значение
+        funding: d.indicators.fundingRate,
+        liquidations: {
+          long: d.indicators.liquidationsLong,
+          short: d.indicators.liquidationsShort,
+          countLong: d.indicators.liqCountLong,
+          countShort: d.indicators.liqCountShort,
+          maxLong: d.indicators.liqMaxLong,
+          maxShort: d.indicators.liqMaxShort,
+        },
+        last_price: d.ohlc.close,
+      };
 
-    this.repo.enqueue(row);
+      this.repo.enqueue(row);
+    }
   }
-}
 
 
-  public getUptimeSecs() { 
-    return Math.floor((Date.now() - this.startedAt) / 1000); 
+  public getUptimeSecs() {
+    return Math.floor((Date.now() - this.startedAt) / 1000);
   }
 }
