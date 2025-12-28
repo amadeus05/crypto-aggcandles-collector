@@ -517,10 +517,19 @@ export class BinanceMarketDataProvider {
     const state = this.marketStates.get(symbol);
     if (!state) return;
 
+    // 🔥 FIX: Фильтруем старые ликвидации
+    // o.T - время транзакции, data.E - время события. o.T точнее.
+    const liqTime = o.T || data.E; 
+    
+    // Если время ликвидации меньше начала текущей свечи — это "эхо" прошлого
+    if (state.lastCandleTimestamp > 0 && liqTime < state.lastCandleTimestamp) {
+      return;
+    }
+
     const price = parseFloat(o.p);
     const qty = parseFloat(o.q);
     const amount = price * qty;
-    const side = o.S === 'SELL' ? 'LONG' : 'SHORT';
+    const side = o.S === 'SELL' ? 'LONG' : 'SHORT'; // SELL order means LONG position liquidated
 
     if (side === 'LONG') {
       state.accLiqLong += amount;
