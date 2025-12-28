@@ -405,7 +405,6 @@ export class BinanceMarketDataProvider {
     if (state.lastPrice === 0) state.lastPrice = close;
 
     // 🔥 OI SNAPSHOT: выбираем последний OI с timestamp ≤ candle close
-    // Это 100% точность без look-ahead bias
     const oiToEmit = isClosed
       ? this.getOIAtTimestamp(state, candleCloseTs)
       : state.openInterest;
@@ -435,13 +434,19 @@ export class BinanceMarketDataProvider {
       }
     });
 
-    // RESET ТОЛЬКО НА CLOSE
+    // RESET ТОЛЬКО НА CLOSE (FIX RACE CONDITION)
     if (isClosed) {
-      state.candleDelta = 0;
+      // ⚠️ УДАЛЕНО: state.candleDelta = 0; (теперь это делает aggTrade)
+      
       state.accLiqLong = 0; state.accLiqShort = 0;
       state.countLiqLong = 0; state.countLiqShort = 0;
       state.maxLiqLong = 0; state.maxLiqShort = 0;
-      state.lastCandleTimestamp = candleTimestamp;
+      
+      // FAILSAFE: На случай если kline пришел значительно позже aggTrade
+      if (candleTimestamp > state.lastCandleTimestamp) {
+        state.lastCandleTimestamp = candleTimestamp;
+        state.candleDelta = 0;
+      }
     }
 
     this.lastUpdateTime = Date.now();
@@ -465,6 +470,7 @@ export class BinanceMarketDataProvider {
   }
 
   // 🔥 ИСТИНА BINANCE: CVD из aggTrade
+  // ✅ FIX: RACE CONDITION SOLVED HERE
   private processAggTrade(data: any): void {
     const state = this.marketStates.get(data.s);
     if (!state) return;
@@ -472,13 +478,31 @@ export class BinanceMarketDataProvider {
     const price = parseFloat(data.p);
     const qty = parseFloat(data.q);
     const usd = price * qty;
-
-    // m = true  -> SELL aggressor (market sell)
-    // m = false -> BUY aggressor (market buy)
     const delta = data.m ? -usd : usd;
+    
+    // Получаем начало минуты, к которой относится этот трейд
+    const tradeCandleStart = Math.floor(data.T / 60000) * 60000;
 
+    // Инициализация (первый запуск)
+    if (state.lastCandleTimestamp === 0) {
+      state.lastCandleTimestamp = tradeCandleStart;
+    }
+
+    // СЦЕНАРИЙ 1: Пришел трейд из НОВОЙ свечи (мы шагнули в будущее)
+    // aggTrade опережает kline, поэтому мы сами переключаем свечу
+    if (tradeCandleStart > state.lastCandleTimestamp) {
+      state.candleDelta = 0; // Сбрасываем дельту
+      state.lastCandleTimestamp = tradeCandleStart; // Обновляем время
+      state.candleDelta += delta; // Записываем первый трейд новой свечи
+    }
+    // СЦЕНАРИЙ 2: Трейд относится к ТЕКУЩЕЙ отслеживаемой свече
+    else if (tradeCandleStart === state.lastCandleTimestamp) {
+      state.candleDelta += delta;
+    }
+    // СЦЕНАРИЙ 3: Запоздалый пакет из прошлого (latency) -> Игнорируем для дельты
+
+    // CVD обновляем всегда (глобальный счетчик)
     state.cvd += delta;
-    state.candleDelta += delta;
     state.lastPrice = price;
   }
 
