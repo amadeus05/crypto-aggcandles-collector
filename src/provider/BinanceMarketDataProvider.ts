@@ -3,7 +3,25 @@ import axios, { AxiosInstance } from 'axios';
 import * as https from 'https';
 import PQueue from 'p-queue';
 
+const SYMBOL_MODE = (process.env.SYMBOL_MODE || 'TOP').toUpperCase(); // 'ALL' | 'TOP'
+const TOP_SYMBOLS_LIMIT = Number(process.env.TOP_SYMBOLS_LIMIT || 50);
+
+const SYMBOL_WHITELIST = new Set(
+  (process.env.SYMBOL_WHITELIST || '')
+    .split(',')
+    .map(s => s.trim().toUpperCase())
+    .filter(Boolean)
+);
+
+const SYMBOL_BLACKLIST = new Set(
+  (process.env.SYMBOL_BLACKLIST || '')
+    .split(',')
+    .map(s => s.trim().toUpperCase())
+    .filter(Boolean)
+);
+
 // --- КОНФИГУРАЦИЯ ---
+const BINANCE_FUTURES_TICKER_24HR_URL = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
 const BINANCE_FUTURES_EXCHANGE_INFO_URL = 'https://fapi.binance.com/fapi/v1/exchangeInfo';
 const BINANCE_FUTURES_OI_API = 'https://fapi.binance.com/fapi/v1/openInterest';
 const BINANCE_FUTURES_STREAM_BASE = 'wss://fstream.binance.com/stream';
@@ -171,35 +189,86 @@ export class BinanceMarketDataProvider {
   }
 
   private async loadSymbols(): Promise<void> {
-    const res = await this.axiosInstance.get(BINANCE_FUTURES_EXCHANGE_INFO_URL);
-    const data = res.data;
+    // 1. Получаем базовую информацию о парах
+    const infoRes = await this.axiosInstance.get(BINANCE_FUTURES_EXCHANGE_INFO_URL);
+    const data = infoRes.data;
+    
+    // Фильтруем валидные пары (USDT, PERPETUAL, TRADING)
+    let validSymbols = (data.symbols || []).filter((s: any) => 
+      s.contractType === 'PERPETUAL' && 
+      s.marginAsset === 'USDT' && 
+      s.status === 'TRADING'
+    );
 
+    // 2. Применяем Whitelist (если задан, оставляем ТОЛЬКО эти монеты)
+    if (SYMBOL_WHITELIST.size > 0) {
+      validSymbols = validSymbols.filter((s: any) => SYMBOL_WHITELIST.has(s.symbol));
+      console.log(`[${this.providerId}] Applied Whitelist: ${validSymbols.length} symbols left`);
+    }
+
+    // 3. Применяем Blacklist (исключаем монеты)
+    if (SYMBOL_BLACKLIST.size > 0) {
+      validSymbols = validSymbols.filter((s: any) => !SYMBOL_BLACKLIST.has(s.symbol));
+    }
+
+    // 4. Режим TOP (фильтрация по объему)
+    // Если включен TOP и (Whitelist пустой или нужно отфильтровать даже внутри вайтлиста)
+    if (SYMBOL_MODE === 'TOP') {
+      try {
+        console.log(`[${this.providerId}] Fetching 24hr ticker for TOP-${TOP_SYMBOLS_LIMIT} sort...`);
+        const tickerRes = await this.axiosInstance.get(BINANCE_FUTURES_TICKER_24HR_URL);
+        
+        // Создаем карту объемов: symbol -> quoteVolume (USDT turnover)
+        const volumeMap = new Map<string, number>();
+        for (const t of tickerRes.data) {
+          volumeMap.set(t.symbol, parseFloat(t.quoteVolume));
+        }
+
+        // Сортируем validSymbols по убыванию объема
+        validSymbols.sort((a: any, b: any) => {
+          const volA = volumeMap.get(a.symbol) || 0;
+          const volB = volumeMap.get(b.symbol) || 0;
+          return volB - volA; // descending
+        });
+
+        // Отрезаем топ N
+        const beforeSlice = validSymbols.length;
+        validSymbols = validSymbols.slice(0, TOP_SYMBOLS_LIMIT);
+        console.log(`[${this.providerId}] Mode TOP: kept ${validSymbols.length} of ${beforeSlice} symbols`);
+        
+      } catch (err) {
+        console.error(`[${this.providerId}] Failed to fetch ticker for TOP sort, falling back to ALL valid symbols`, err);
+        // Не выбрасываем ошибку, чтобы продолжить работу хотя бы с несортированным списком
+      }
+    }
+
+    // 5. Инициализация состояния
     this.symbols.clear();
     this.marketStates.clear();
     this.priorityMap.clear();
 
-    for (const s of data.symbols || []) {
-      if (s.contractType === 'PERPETUAL' && s.marginAsset === 'USDT' && s.status === 'TRADING') {
-        this.symbols.add(s.symbol);
-        this.marketStates.set(s.symbol, {
-          symbol: s.symbol,
-          cvd: 0,
-          candleDelta: 0,
-          lastCandleTimestamp: 0,
-          fundingRate: 0,
-          openInterest: 0,
-          oiHistory: [],
-          lastOITimestamp: 0,
-          lastPrice: 0,
-          accLiqLong: 0, accLiqShort: 0,
-          countLiqLong: 0, countLiqShort: 0,
-          maxLiqLong: 0, maxLiqShort: 0,
-        });
-        const initialPriority = LOW_PRIORITY_SYMBOLS.has(s.symbol) ? 1 : 5;
-        this.priorityMap.set(s.symbol, { priority: initialPriority, lastUpdated: 0 });
-      }
+    for (const s of validSymbols) {
+      this.symbols.add(s.symbol);
+      this.marketStates.set(s.symbol, {
+        symbol: s.symbol,
+        cvd: 0,
+        candleDelta: 0,
+        lastCandleTimestamp: 0,
+        fundingRate: 0,
+        openInterest: 0,
+        oiHistory: [],
+        lastOITimestamp: 0,
+        lastPrice: 0,
+        accLiqLong: 0, accLiqShort: 0,
+        countLiqLong: 0, countLiqShort: 0,
+        maxLiqLong: 0, maxLiqShort: 0,
+      });
+      
+      const initialPriority = LOW_PRIORITY_SYMBOLS.has(s.symbol) ? 1 : 5;
+      this.priorityMap.set(s.symbol, { priority: initialPriority, lastUpdated: 0 });
     }
-    console.log(`[${this.providerId}] Loaded ${this.symbols.size} symbols`);
+    
+    console.log(`[${this.providerId}] Final load: ${this.symbols.size} symbols ready`);
   }
 
   public async connect(): Promise<void> {
