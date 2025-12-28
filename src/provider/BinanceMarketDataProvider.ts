@@ -347,6 +347,9 @@ export class BinanceMarketDataProvider {
     ws.on('close', () => {
       if (closedByUs) return;
       const timer = setTimeout(() => {
+        // 🔥 FIX: удаляем таймер из Set при выполнении во избежание утечки памяти
+        this.reconnectTimers.delete(timer);
+        
         if (!this.connected) return;
         const idx = this.wsList.indexOf(ws);
         if (idx !== -1) {
@@ -436,8 +439,7 @@ export class BinanceMarketDataProvider {
 
     // RESET ТОЛЬКО НА CLOSE (FIX RACE CONDITION)
     if (isClosed) {
-      // ⚠️ УДАЛЕНО: state.candleDelta = 0; (теперь это делает aggTrade)
-      
+      // ⚠️ candleDelta сбрасывается в aggTrade
       state.accLiqLong = 0; state.accLiqShort = 0;
       state.countLiqLong = 0; state.countLiqShort = 0;
       state.maxLiqLong = 0; state.maxLiqShort = 0;
@@ -470,7 +472,6 @@ export class BinanceMarketDataProvider {
   }
 
   // 🔥 ИСТИНА BINANCE: CVD из aggTrade
-  // ✅ FIX: RACE CONDITION SOLVED HERE
   private processAggTrade(data: any): void {
     const state = this.marketStates.get(data.s);
     if (!state) return;
@@ -489,7 +490,6 @@ export class BinanceMarketDataProvider {
     }
 
     // СЦЕНАРИЙ 1: Пришел трейд из НОВОЙ свечи (мы шагнули в будущее)
-    // aggTrade опережает kline, поэтому мы сами переключаем свечу
     if (tradeCandleStart > state.lastCandleTimestamp) {
       state.candleDelta = 0; // Сбрасываем дельту
       state.lastCandleTimestamp = tradeCandleStart; // Обновляем время
@@ -499,9 +499,8 @@ export class BinanceMarketDataProvider {
     else if (tradeCandleStart === state.lastCandleTimestamp) {
       state.candleDelta += delta;
     }
-    // СЦЕНАРИЙ 3: Запоздалый пакет из прошлого (latency) -> Игнорируем для дельты
+    // СЦЕНАРИЙ 3: Запоздалый пакет -> Игнорируем для дельты
 
-    // CVD обновляем всегда (глобальный счетчик)
     state.cvd += delta;
     state.lastPrice = price;
   }
@@ -517,11 +516,9 @@ export class BinanceMarketDataProvider {
     const state = this.marketStates.get(symbol);
     if (!state) return;
 
-    // 🔥 FIX: Фильтруем старые ликвидации
-    // o.T - время транзакции, data.E - время события. o.T точнее.
+    // 🔥 FIX: Фильтруем старые ликвидации (Latency issue)
     const liqTime = o.T || data.E; 
-    
-    // Если время ликвидации меньше начала текущей свечи — это "эхо" прошлого
+    // Если ликвидация из прошлого (до начала текущей свечи) — игнорируем
     if (state.lastCandleTimestamp > 0 && liqTime < state.lastCandleTimestamp) {
       return;
     }
@@ -529,7 +526,7 @@ export class BinanceMarketDataProvider {
     const price = parseFloat(o.p);
     const qty = parseFloat(o.q);
     const amount = price * qty;
-    const side = o.S === 'SELL' ? 'LONG' : 'SHORT'; // SELL order means LONG position liquidated
+    const side = o.S === 'SELL' ? 'LONG' : 'SHORT';
 
     if (side === 'LONG') {
       state.accLiqLong += amount;
