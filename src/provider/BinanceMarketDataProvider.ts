@@ -6,6 +6,10 @@ import PQueue from 'p-queue';
 const SYMBOL_MODE = (process.env.SYMBOL_MODE || 'TOP').toUpperCase(); // 'ALL' | 'TOP'
 const TOP_SYMBOLS_LIMIT = Number(process.env.TOP_SYMBOLS_LIMIT || 50);
 
+const IO_POLL_BASE_INTERVAL = Number(process.env.IO_POLL_BASE_INTERVAL || 15_000);
+const IO_POLL_FAST_INTERVAL = Number(process.env.IO_POLL_MIN_INTERVAL || 5_000);
+const IO_POLL_LOWP_INTERVAL = Number(process.env.IO_POLL_MIN_INTERVAL || 60_000);
+
 const SYMBOL_WHITELIST = new Set(
   (process.env.SYMBOL_WHITELIST || '')
     .split(',')
@@ -638,9 +642,9 @@ export class BinanceMarketDataProvider {
     const candidates: { symbol: string; urgency: number }[] = [];
 
     for (const [sym, p] of this.priorityMap.entries()) {
-      let interval = 15000; // Стандарт (priority 5)
-      if (p.priority === 1) interval = 60000;
-      else if (p.priority === 10) interval = 2000;
+      let interval = IO_POLL_BASE_INTERVAL; // Стандарт (priority 5)
+      if (p.priority === 1) interval = IO_POLL_LOWP_INTERVAL;
+      else if (p.priority === 10) interval = IO_POLL_FAST_INTERVAL;
 
       const elapsed = now - p.lastUpdated;
 
