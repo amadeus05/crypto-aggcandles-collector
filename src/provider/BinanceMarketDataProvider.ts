@@ -701,7 +701,18 @@ export class BinanceMarketDataProvider {
         if (p) p.lastUpdated = Date.now();
       }
     } catch (err: any) {
+      if (err.response?.status === 429) {
+        const p = this.priorityMap.get(symbol);
+        if (p) p.lastUpdated = Date.now() + 10_000; // штраф
 
+         console.warn('[OI 429]', {
+          symbol,
+          queueSize: this.oiQueue?.size,
+          pending: this.oiQueue?.pending,
+          lag: this.maxQueueDelay
+        });
+
+      }
       // Игнорируем сетевые ошибки, монета останется с высоким urgency и обновится в след. цикле
       if (axios.isAxiosError(err) && (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT')) {
         // Можно включить, если нужно отлаживать сеть
