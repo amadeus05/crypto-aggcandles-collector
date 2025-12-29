@@ -36,7 +36,7 @@ const KLINE_INTERVAL = '1m';
 // ОПТИМИЗАЦИЯ ПОД 550 МОНЕТ:
 // Лимит Binance IP для FAPI ~2400 в минуту. 
 // 35 запросов/сек * 60 = 2100. Это безопасно и быстро.
-const MAX_REQ_PER_SEC = 35;
+const MAX_REQ_PER_SEC = Number(process.env.MAX_REQ_SEC || 35);
 
 // Увеличили таймаут, чтобы при нагрузке запросы не обрывались
 const HTTP_TIMEOUT = 10000;
@@ -701,6 +701,7 @@ export class BinanceMarketDataProvider {
         if (p) p.lastUpdated = Date.now();
       }
     } catch (err: any) {
+
       // Игнорируем сетевые ошибки, монета останется с высоким urgency и обновится в след. цикле
       if (axios.isAxiosError(err) && (err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT')) {
         // Можно включить, если нужно отлаживать сеть
