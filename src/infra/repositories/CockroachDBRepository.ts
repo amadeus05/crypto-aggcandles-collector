@@ -1,5 +1,5 @@
 import { Pool, PoolClient } from 'pg';
-import { SmartCandleRow } from '../types';
+import { SmartCandleRow } from '../../domain/types';
 import fs from 'fs';
 
 export class CockroachDBRepository {

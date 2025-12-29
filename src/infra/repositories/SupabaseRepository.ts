@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { SmartCandleRow } from '../types';
+import { SmartCandleRow } from '../../domain/types';
 
 export interface Repository {
   init(): Promise<void>;
