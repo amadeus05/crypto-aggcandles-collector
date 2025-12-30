@@ -1,17 +1,33 @@
 export interface SmartCandleRow {
   symbol: string;
   ts: number;
-  o: number; h: number; l: number; c: number; v: number;
-  cvd: number;
-  delta: number;
+  
+  // OHLC
+  o: number; h: number; l: number; c: number;
+  
+  // Объемы
+  v: number;       // Base Volume (Contracts/Coins) - совпадает с Binance kline.v
+  quote_v: number; // Quote Volume (USDT) - совпадает с Binance kline.q
+  
+  // Дельта и CVD
+  delta: number;   // Delta за эту свечу (USDT или Contracts, зависит от логики, здесь USDT)
+  cvd: number;     // Cumulative Volume Delta (не сбрасывается)
+  
+  // Мета
   oi: number;
   funding: number;
+  
   liquidations: {
     long: number; short: number;
     countLong: number; countShort: number;
     maxLong: number; maxShort: number;
   };
+  
   last_price: number;
+  
+  // Флаги состояния
+  isClosed: boolean;     // Soft-close (пришел kline closed)
+  isFinalized: boolean;  // Hard-close (прошло время Grace, данные заморожены)
 }
 
 export interface MarketProvider {
