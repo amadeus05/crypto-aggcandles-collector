@@ -116,10 +116,20 @@ export class SupabaseRepository implements Repository {
     const rows = [...this.buffer];
     this.buffer = [];
 
+    // Strip runtime-only fields that don't exist in the DB schema
+    const dbRows = rows.map(({ isClosed, isFinalized, quote_v, ...rest }) => rest);
+
+    // Deduplicate by (symbol, ts) - keep only the latest version of each candle
+    const deduped = new Map<string, typeof dbRows[0]>();
+    for (const row of dbRows) {
+      deduped.set(`${row.symbol}:${row.ts}`, row);
+    }
+    const uniqueRows = Array.from(deduped.values());
+
     try {
       const { error } = await this.client
         .from('candles')
-        .upsert(rows, { onConflict: 'symbol,ts' });
+        .upsert(uniqueRows, { onConflict: 'symbol,ts' });
 
       if (error) {
         console.error('[SupabaseRepository] Flush error:', error.message);

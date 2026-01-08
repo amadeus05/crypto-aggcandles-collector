@@ -5,10 +5,10 @@ interface SymbolState {
   symbol: string;
   current: SmartCandleRow;        // Текущая (Live)
   previous: SmartCandleRow | null;// Предыдущая (Grace period)
-  
+
   // Глобальные аккумуляторы
   globalCvd: number;              // Накапливаемый CVD за все время жизни бота
-  
+
   // Вспомогательные данные для инициализации
   lastKnownOI: number;
   lastKnownFunding: number;
@@ -16,14 +16,14 @@ interface SymbolState {
 
 export class StateEngine {
   private states = new Map<string, SymbolState>();
-  
+
   // Настройки таймингов
   private readonly GRACE_PERIOD_MS = 2000; // Окно для soft-updates
-  
+
   constructor(
     private onStreamUpdate: (row: SmartCandleRow) => void,
     private onPersistUpdate: (row: SmartCandleRow) => void
-  ) {}
+  ) { }
 
   public processEvent(e: AnyMarketEvent) {
     let state = this.states.get(e.symbol);
@@ -46,12 +46,12 @@ export class StateEngine {
 
     // 2. Routing Events (Trade, Liquidation, Kline)
     const currentStart = state.current.ts;
-    const currentEnd = currentStart + 60000; 
+    const currentEnd = currentStart + 60000;
 
     // A) Событие относится к текущей свече
     if (e.ts >= currentStart && e.ts < currentEnd) {
       this.applyEventToCandle(state, state.current, e);
-      
+
       // Смена минуты ТОЛЬКО по флагу kline.isClosed
       if (e.type === 'kline' && e.isClosed) {
         this.rotateCandle(state);
@@ -59,7 +59,7 @@ export class StateEngine {
         this.onStreamUpdate(state.current);
       }
     }
-    
+
     // B) Событие относится к предыдущей свече (Grace Period)
     else if (state.previous && e.ts >= state.previous.ts && e.ts < (state.previous.ts + 60000)) {
       this.handleLateEvent(state, state.previous, e);
@@ -70,21 +70,21 @@ export class StateEngine {
       // Игнорируем трейды из будущего, пока не придет kline closed для текущей.
       // Это предотвращает создание "дырок" и рассинхрон OHLC.
       // Как только придет kline closed, мы переключимся, и следующие трейды пойдут нормально.
-      return; 
+      return;
     }
   }
 
   private handleOI(state: SymbolState, ts: number, val: number) {
     state.lastKnownOI = val;
-    
+
     // Если OI пришел для пред. свечи в Grace period
     if (state.previous && !state.previous.isFinalized) {
-       const prevEnd = state.previous.ts + 60000;
-       // Если TS события попадает в диапазон предыдущей свечи (плюс небольшой люфт)
-       if (ts < prevEnd + this.GRACE_PERIOD_MS) {
-         state.previous.oi = val;
-         this.onPersistUpdate(state.previous);
-       }
+      const prevEnd = state.previous.ts + 60000;
+      // Если TS события попадает в диапазон предыдущей свечи (плюс небольшой люфт)
+      if (ts < prevEnd + this.GRACE_PERIOD_MS) {
+        state.previous.oi = val;
+        this.onPersistUpdate(state.previous);
+      }
     }
 
     // Текущую обновляем всегда
@@ -93,6 +93,7 @@ export class StateEngine {
   }
 
   private handleLateEvent(state: SymbolState, prev: SmartCandleRow, e: AnyMarketEvent) {
+    console.log('handleLateEvent', state.symbol, prev.ts, e.ts);
     // 1. Проверка Hard Finalization
     if (prev.isFinalized) return;
 
@@ -106,7 +107,7 @@ export class StateEngine {
 
     // 3. Применяем изменения
     this.applyEventToCandle(state, prev, e);
-    
+
     // 4. Отправляем апдейт в БД и Стрим
     this.onPersistUpdate(prev);
     this.onStreamUpdate(prev);
@@ -122,15 +123,15 @@ export class StateEngine {
 
     // Подготовка новой свечи
     const nextTs = state.previous.ts + 60000;
-    
+
     // CVD наследуется (Continuous)
     // Funding и OI берутся последние известные
     state.current = this.createCandle(
-      state.symbol, 
-      nextTs, 
-      state.previous.c, 
+      state.symbol,
+      nextTs,
+      state.previous.c,
       state.globalCvd, // Наследуем накопленный итог
-      state.lastKnownOI, 
+      state.lastKnownOI,
       state.lastKnownFunding
     );
 
@@ -156,37 +157,28 @@ export class StateEngine {
   private mergeTrade(state: SymbolState, row: SmartCandleRow, e: TradeEvent) {
     const quoteVal = e.price * e.qty; // USDT Volume
     const baseVal = e.qty;            // Contract Volume
-    
+
     // CVD считаем в деньгах (USDT Delta)
     const delta = e.isBuyerMaker ? -quoteVal : quoteVal;
 
     row.v += baseVal;        // Base asset volume
     row.quote_v += quoteVal; // Quote asset volume
-    
+
     // Обновляем Delta свечи
     row.delta += delta;
 
     // Обновляем Global CVD стейта
-    // ВАЖНО: Мы обновляем глобальный счетчик только если это current свеча,
-    // или если это late trade, мы корректируем row.cvd, но globalCvd 
-    // лучше не трогать ретроактивно, чтобы не прыгал live следующей свечи.
-    // Для простоты: Delta накапливается в row. CVD = row.delta + (CVD start of candle).
-    // Но так как мы храним globalCvd в стейте:
-    
     if (row === state.current) {
-        state.globalCvd += delta;
-        row.cvd = state.globalCvd;
+      state.globalCvd += delta;
+      row.cvd = state.globalCvd;
     } else {
-        // Если это late update для previous, мы меняем ее delta и cvd,
-        // но НЕ трогаем globalCvd для текущей свечи, чтобы избежать скачков.
-        row.cvd += delta; 
+      // Late update для previous: корректируем cvd, но НЕ globalCvd
+      row.cvd += delta;
     }
 
     row.last_price = e.price;
-    // Обновляем High/Low для красоты Live (kline потом перезапишет точнее)
-    if (e.price > row.h) row.h = e.price;
-    if (e.price < row.l) row.l = e.price;
     row.c = e.price;
+    // НЕ обновляем H/L здесь - kline closed будет авторитетным источником
   }
 
   private mergeLiquidation(row: SmartCandleRow, e: LiquidationEvent) {
@@ -203,16 +195,15 @@ export class StateEngine {
   }
 
   private mergeKline(row: SmartCandleRow, e: KlineEvent) {
-    // Kline - авторитетный источник OHLC и Volume
+    // Принимаем ТОЛЬКО closed klines для финальных OHLC данных
+    if (!e.isClosed) return;
+
+    // Kline closed - авторитетный источник OHLC и Volume
     row.o = e.open;
     row.h = e.high;
     row.l = e.low;
     row.c = e.close;
-    // Перезаписываем Volume, так как Binance точнее агрегирует тики
-    // НО: CVD и Delta мы оставляем свои, т.к. Binance их не дает
-    row.v = e.volume; // Base volume
-    // Если нужно quote volume от бинанса:
-    // row.quote_v = e.quoteVolume; // (предполагая что в ивенте есть q, обычно есть)
+    row.v = e.volume; // Base volume от Binance (точнее чем наш счётчик)
     row.last_price = e.close;
   }
 
@@ -230,11 +221,11 @@ export class StateEngine {
   }
 
   private createCandle(
-    symbol: string, 
-    ts: number, 
-    open: number, 
+    symbol: string,
+    ts: number,
+    open: number,
     startCvd: number,
-    oi: number, 
+    oi: number,
     funding: number
   ): SmartCandleRow {
     return {
