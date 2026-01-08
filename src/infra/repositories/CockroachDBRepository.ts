@@ -63,7 +63,7 @@ export class CockroachDBRepository {
     let client: PoolClient | null = null;
     try {
       client = await this.pool.connect();
-      
+
       const createTableSQL = `
         CREATE TABLE IF NOT EXISTS candles (
           symbol TEXT NOT NULL,
@@ -112,21 +112,56 @@ export class CockroachDBRepository {
     const rows = [...this.buffer];
     this.buffer = [];
 
+    // Strip runtime-only fields that don't exist in the DB schema
+    const dbRows = rows.map(({ isClosed, isFinalized, quote_v, ...rest }) => rest);
+
+    // Deduplicate by (symbol, ts) - keep only the latest version of each candle
+    const deduped = new Map<string, typeof dbRows[0]>();
+    for (const row of dbRows) {
+      deduped.set(`${row.symbol}:${row.ts}`, row);
+    }
+    const uniqueRows = Array.from(deduped.values());
+
+    if (!uniqueRows.length) return;
+
     let client: PoolClient | null = null;
     try {
       client = await this.pool.connect();
-      
-      const values = rows.map(row => 
-        `('${row.symbol}', ${row.ts}, ${row.o || 'NULL'}, ${row.h || 'NULL'}, ${row.l || 'NULL'}, 
-          ${row.c || 'NULL'}, ${row.v || 'NULL'}, ${row.cvd || 'NULL'}, ${row.delta || 'NULL'}, 
-          ${row.oi || 'NULL'}, ${row.funding || 'NULL'}, 
-          ${row.liquidations ? `'${JSON.stringify(row.liquidations)}'` : 'NULL'}, 
-          ${row.last_price || 'NULL'})`
-      ).join(',');
+
+      // Build parameterized query
+      const columns = ['symbol', 'ts', 'o', 'h', 'l', 'c', 'v', 'cvd', 'delta', 'oi', 'funding', 'liquidations', 'last_price'];
+      const paramCount = columns.length;
+
+      // Generate placeholders: ($1, $2, ..., $13), ($14, $15, ..., $26), ...
+      const valuePlaceholders = uniqueRows.map((_, rowIdx) => {
+        const start = rowIdx * paramCount + 1;
+        const placeholders = columns.map((_, colIdx) => `$${start + colIdx}`);
+        return `(${placeholders.join(', ')})`;
+      }).join(', ');
+
+      // Flatten all values into a single array
+      const params: (string | number | null | object)[] = [];
+      for (const row of uniqueRows) {
+        params.push(
+          row.symbol,
+          row.ts,
+          row.o ?? null,
+          row.h ?? null,
+          row.l ?? null,
+          row.c ?? null,
+          row.v ?? null,
+          row.cvd ?? null,
+          row.delta ?? null,
+          row.oi ?? null,
+          row.funding ?? null,
+          row.liquidations ? JSON.stringify(row.liquidations) : null,
+          row.last_price ?? null
+        );
+      }
 
       const query = `
-        INSERT INTO candles (symbol, ts, o, h, l, c, v, cvd, delta, oi, funding, liquidations, last_price)
-        VALUES ${values}
+        INSERT INTO candles (${columns.join(', ')})
+        VALUES ${valuePlaceholders}
         ON CONFLICT (symbol, ts) DO UPDATE SET
           o = EXCLUDED.o,
           h = EXCLUDED.h,
@@ -141,8 +176,8 @@ export class CockroachDBRepository {
           last_price = EXCLUDED.last_price
       `;
 
-      await client.query(query);
-      
+      await client.query(query, params);
+
     } catch (error) {
       console.error('[CockroachDBRepository] Flush error:', error);
       this.buffer.push(...rows); // вернуть в буфер при ошибке
