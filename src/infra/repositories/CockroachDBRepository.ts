@@ -73,6 +73,7 @@ export class CockroachDBRepository {
           l DOUBLE PRECISION,
           c DOUBLE PRECISION,
           v DOUBLE PRECISION,
+          quote_v DOUBLE PRECISION,
           cvd DOUBLE PRECISION,
           delta DOUBLE PRECISION,
           oi DOUBLE PRECISION,
@@ -82,6 +83,8 @@ export class CockroachDBRepository {
           created_at TIMESTAMPTZ DEFAULT NOW(),
           PRIMARY KEY (symbol, ts)
         );
+
+        ALTER TABLE candles ADD COLUMN IF NOT EXISTS quote_v DOUBLE PRECISION;
 
         CREATE INDEX IF NOT EXISTS idx_candles_ts ON candles (ts);
         CREATE INDEX IF NOT EXISTS idx_candles_symbol ON candles (symbol);
@@ -113,7 +116,7 @@ export class CockroachDBRepository {
     this.buffer = [];
 
     // Strip runtime-only fields that don't exist in the DB schema
-    const dbRows = rows.map(({ isClosed, isFinalized, quote_v, ...rest }) => rest);
+    const dbRows = rows.map(({ isClosed, isFinalized, ...rest }) => rest);
 
     // Deduplicate by (symbol, ts) - keep only the latest version of each candle
     const deduped = new Map<string, typeof dbRows[0]>();
@@ -129,7 +132,7 @@ export class CockroachDBRepository {
       client = await this.pool.connect();
 
       // Build parameterized query
-      const columns = ['symbol', 'ts', 'o', 'h', 'l', 'c', 'v', 'cvd', 'delta', 'oi', 'funding', 'liquidations', 'last_price'];
+      const columns = ['symbol', 'ts', 'o', 'h', 'l', 'c', 'v', 'quote_v', 'cvd', 'delta', 'oi', 'funding', 'liquidations', 'last_price'];
       const paramCount = columns.length;
 
       // Generate placeholders: ($1, $2, ..., $13), ($14, $15, ..., $26), ...
@@ -150,6 +153,7 @@ export class CockroachDBRepository {
           row.l ?? null,
           row.c ?? null,
           row.v ?? null,
+          row.quote_v ?? null,
           row.cvd ?? null,
           row.delta ?? null,
           row.oi ?? null,
@@ -168,6 +172,7 @@ export class CockroachDBRepository {
           l = EXCLUDED.l,
           c = EXCLUDED.c,
           v = EXCLUDED.v,
+          quote_v = EXCLUDED.quote_v,
           cvd = EXCLUDED.cvd,
           delta = EXCLUDED.delta,
           oi = EXCLUDED.oi,

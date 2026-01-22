@@ -60,6 +60,7 @@ export class SupabaseRepository implements Repository {
         l DOUBLE PRECISION,
         c DOUBLE PRECISION,
         v DOUBLE PRECISION,
+        quote_v DOUBLE PRECISION,
         cvd DOUBLE PRECISION,
         delta DOUBLE PRECISION,
         oi DOUBLE PRECISION,
@@ -69,6 +70,8 @@ export class SupabaseRepository implements Repository {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         PRIMARY KEY (symbol, ts)
       );
+
+      ALTER TABLE candles ADD COLUMN IF NOT EXISTS quote_v DOUBLE PRECISION;
 
       CREATE INDEX IF NOT EXISTS idx_candles_ts ON candles (ts);
       CREATE INDEX IF NOT EXISTS idx_candles_symbol ON candles (symbol);
@@ -96,6 +99,17 @@ export class SupabaseRepository implements Repository {
         console.error('[SupabaseRepository] Error checking table:', selectError);
       } else {
         console.log('[SupabaseRepository] Table "candles" exists');
+
+        // Если таблица уже есть, но колонки quote_v может не быть — предупреждаем, иначе upsert будет падать.
+        const { error: colErr } = await this.client
+          .from('candles')
+          .select('quote_v')
+          .limit(1);
+        if (colErr) {
+          console.error('[SupabaseRepository] Column "quote_v" is missing or not selectable.');
+          console.error('Please run this SQL in Supabase SQL editor:');
+          console.error('ALTER TABLE candles ADD COLUMN IF NOT EXISTS quote_v DOUBLE PRECISION;');
+        }
       }
     } else {
       console.log('[SupabaseRepository] Table "candles" ensured');
@@ -117,7 +131,7 @@ export class SupabaseRepository implements Repository {
     this.buffer = [];
 
     // Strip runtime-only fields that don't exist in the DB schema
-    const dbRows = rows.map(({ isClosed, isFinalized, quote_v, ...rest }) => rest);
+    const dbRows = rows.map(({ isClosed, isFinalized, ...rest }) => rest);
 
     // Deduplicate by (symbol, ts) - keep only the latest version of each candle
     const deduped = new Map<string, typeof dbRows[0]>();
