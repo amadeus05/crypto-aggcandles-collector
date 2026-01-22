@@ -19,11 +19,19 @@ export class StateEngine {
 
   // Настройки таймингов
   private readonly GRACE_PERIOD_MS = 2000; // Окно для soft-updates
+  private finalizeIntervalId: NodeJS.Timeout;
 
   constructor(
     private onStreamUpdate: (row: SmartCandleRow) => void,
     private onPersistUpdate: (row: SmartCandleRow) => void
-  ) { }
+  ) {
+    // Хард-финализация закрытых 1m свечей, чтобы downstream (5m/15m) получал ровно 1 финальный апдейт.
+    this.finalizeIntervalId = setInterval(() => this.finalizeExpired(), 250);
+  }
+
+  public shutdown() {
+    clearInterval(this.finalizeIntervalId);
+  }
 
   public processEvent(e: AnyMarketEvent) {
     let state = this.states.get(e.symbol);
@@ -93,7 +101,6 @@ export class StateEngine {
   }
 
   private handleLateEvent(state: SymbolState, prev: SmartCandleRow, e: AnyMarketEvent) {
-    console.log('handleLateEvent', state.symbol, prev.ts, e.ts);
     // 1. Проверка Hard Finalization
     if (prev.isFinalized) return;
 
@@ -102,6 +109,9 @@ export class StateEngine {
     const timeSinceClose = Date.now() - (prev.ts + 60000);
     if (timeSinceClose > this.GRACE_PERIOD_MS) {
       prev.isFinalized = true;
+      this.onPersistUpdate(prev);
+      this.onStreamUpdate(prev);
+      state.previous = null;
       return;
     }
 
@@ -172,8 +182,12 @@ export class StateEngine {
       state.globalCvd += delta;
       row.cvd = state.globalCvd;
     } else {
-      // Late update для previous: корректируем cvd, но НЕ globalCvd
+      // Late update для previous: CVD — накопительная метрика, поэтому нужно сдвинуть и глобальный CVD,
+      // иначе последующие свечи будут иметь неконсистентный baseline.
+      state.globalCvd += delta;
       row.cvd += delta;
+      // Текущая свеча хранит абсолютный CVD, поэтому её тоже нужно сдвинуть.
+      state.current.cvd = state.globalCvd;
     }
 
     row.last_price = e.price;
@@ -183,6 +197,13 @@ export class StateEngine {
 
   private mergeLiquidation(row: SmartCandleRow, e: LiquidationEvent) {
     const val = e.price * e.qty;
+    // TODO(алго/качество данных):
+    // 1) Сейчас агрегация ликвидаций идёт только в notional (USDT). Можно параллельно копить qty (контракты),
+    //    чтобы потом строить нормализованные фичи и сравнивать разные инструменты.
+    // 2) Если понадобятся стратегии "по уровню цены", имеет смысл хранить компактный профайл:
+    //    например histogram по price buckets или top-N крупнейших ликвидаций за минуту (с price).
+    // 3) Подумать про дедуп/защиту от повторов от Binance (orderId отсутствует в текущем событии),
+    //    если будет замечено задвоение в потоке.
     if (e.side === 'LONG') {
       row.liquidations.long += val;
       row.liquidations.countLong++;
@@ -245,5 +266,21 @@ export class StateEngine {
       isClosed: false,
       isFinalized: false
     };
+  }
+
+  private finalizeExpired() {
+    const now = Date.now();
+    for (const state of this.states.values()) {
+      const prev = state.previous;
+      if (!prev || prev.isFinalized) continue;
+
+      const closeAt = prev.ts + 60000;
+      if (now - closeAt > this.GRACE_PERIOD_MS) {
+        prev.isFinalized = true;
+        this.onPersistUpdate(prev);
+        this.onStreamUpdate(prev);
+        state.previous = null;
+      }
+    }
   }
 }
