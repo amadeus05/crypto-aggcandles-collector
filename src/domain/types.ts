@@ -18,6 +18,12 @@ export interface SmartCandleRow {
   funding: number;
   
   liquidations: {
+    // TODO(алго/фичи): Сейчас храним только notional (price*qty) + count + max.
+    // Для ботов обычно полезно дополнительно:
+    // - liqLongQty / liqShortQty (base/contract qty), чтобы не терять информацию о размере в контрактах
+    // - liqTotal / liqNet / liqImbalance (готовые derived-метрики)
+    // - (опционально) сжатый профиль по цене (например, topN уровней или bucket-histogram),
+    //   если планируются стратегии на "карте ликвидаций" внутри свечи.
     long: number; short: number;
     countLong: number; countShort: number;
     maxLong: number; maxShort: number;
