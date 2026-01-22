@@ -4,7 +4,6 @@ type TF = 5 | 15;
 
 interface Bucket {
     row: SmartCandleRow;
-    cvdStart: number;      // CVD в начале TF
     cvdEnd: number;        // CVD в конце TF (обновляется)
     lastUpdate: number;
 }
@@ -45,10 +44,8 @@ export class TimeframeAggregator {
 
         if (!bucket) {
             // Создаём новый bucket
-            const cvdStart = min1.cvd - min1.delta;  // CVD в начале минуты
             bucket = {
                 row: this.createFrom(min1, bucketTs),
-                cvdStart,
                 cvdEnd: min1.cvd,
                 lastUpdate: Date.now()
             };
@@ -116,8 +113,8 @@ export class TimeframeAggregator {
                 short: src.liquidations.short,
                 countLong: src.liquidations.countLong,
                 countShort: src.liquidations.countShort,
-                maxLong: src.liquidations.maxLong || -Infinity,
-                maxShort: src.liquidations.maxShort || -Infinity
+                maxLong: src.liquidations.maxLong,
+                maxShort: src.liquidations.maxShort
             },
             last_price: src.last_price,
             isClosed: false,
@@ -148,14 +145,8 @@ export class TimeframeAggregator {
         dst.liquidations.short += src.liquidations.short;
         dst.liquidations.countLong += src.liquidations.countLong;
         dst.liquidations.countShort += src.liquidations.countShort;
-        dst.liquidations.maxLong = Math.max(
-            dst.liquidations.maxLong === -Infinity ? 0 : dst.liquidations.maxLong,
-            src.liquidations.maxLong
-        );
-        dst.liquidations.maxShort = Math.max(
-            dst.liquidations.maxShort === -Infinity ? 0 : dst.liquidations.maxShort,
-            src.liquidations.maxShort
-        );
+        dst.liquidations.maxLong = Math.max(dst.liquidations.maxLong, src.liquidations.maxLong);
+        dst.liquidations.maxShort = Math.max(dst.liquidations.maxShort, src.liquidations.maxShort);
     }
 
     shutdown() {
