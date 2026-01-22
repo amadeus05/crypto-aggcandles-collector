@@ -29,10 +29,14 @@ async function main() {
 
   // 3. Build Timeframe Aggregators (5m, 15m)
   const agg5m = new TimeframeAggregator(5, row => {
+    // TODO(архитектура): Сейчас 5m/15m и 1m пишутся в одну таблицу candles по ключу (symbol, ts).
+    // Это может перетирать данные между таймфреймами (ts совпадает для начала бакета).
+    // Позже: добавить поле tf и делать PK (symbol, tf, ts) или разнести по таблицам candles_1m/5m/15m.
     repo.enqueue(row);
     streamer.broadcastTF(row, '5m');
   });
   const agg15m = new TimeframeAggregator(15, row => {
+    // TODO(архитектура): см. комментарий выше про конфликт таймфреймов при upsert.
     repo.enqueue(row);
     streamer.broadcastTF(row, '15m');
   });
@@ -69,6 +73,7 @@ async function main() {
   const shutdown = async () => {
     console.log('Stopping...');
     await connector.disconnect();
+    engine.shutdown();
     agg5m.shutdown();        // Flush pending 5m buckets
     agg15m.shutdown();       // Flush pending 15m buckets
     await repo.shutdown();
